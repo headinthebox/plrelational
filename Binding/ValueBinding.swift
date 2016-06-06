@@ -60,6 +60,13 @@ extension ValueBinding {
     public func zip<U>(other: ValueBinding<U>) -> ValueBinding<(T, U)> {
         return ZippedValueBinding(self, other)
     }
+    
+    // XXX - Is this the right function signature?
+    public func whenTrue(condition: Void -> Bool)(fn: Void -> Void) -> Void {
+        if condition() == true {
+            fn()
+        }
+    }
 }
 
 extension ValueBinding where T: SequenceType, T.Generator.Element: Equatable {
