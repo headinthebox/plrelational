@@ -60,13 +60,6 @@ extension ValueBinding {
     public func zip<U>(other: ValueBinding<U>) -> ValueBinding<(T, U)> {
         return ZippedValueBinding(self, other)
     }
-    
-    // XXX - Is this the right function signature?
-    public func whenTrue(condition: Void -> Bool)(fn: Void -> Void) -> Void {
-        if condition() == true {
-            fn()
-        }
-    }
 }
 
 extension ValueBinding where T: SequenceType, T.Generator.Element: Equatable {
@@ -81,6 +74,12 @@ extension ValueBinding where T: SequenceType, T.Generator.Element: Hashable {
     }
 }
 
+extension ValueBinding where T: BooleanType {
+    public func whenTrue(callbackFn: Void -> T) -> ValueBinding<Bool> {
+        return WhenTrueValueBinding(initialValue: self.value.boolValue, callbackFn: callbackFn)
+    }
+}
+
 private class ConstantValueBinding<T>: ValueBinding<T> {
     init(value: T) {
         super.init(initialValue: value)
@@ -88,6 +87,16 @@ private class ConstantValueBinding<T>: ValueBinding<T> {
     
     private override func addChangeObserver(observer: ChangeObserver) -> ObserverRemoval {
         return {}
+    }
+}
+
+private class WhenTrueValueBinding<T>: ValueBinding<Bool> {
+    private var callbackWhenTrue: Void -> T
+    
+    init(initialValue: Bool, callbackFn: Void -> T) {
+        self.callbackWhenTrue = callbackFn
+        super.init(initialValue: initialValue)
+//        self.addChangeObserver( ??? )
     }
 }
 
