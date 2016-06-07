@@ -1014,6 +1014,150 @@ class RelationTests: DBTestCase {
                         [1,    "cat"]))
     }
 
+    func testComplexTransactionObservation() {
+        let sqliteDB = makeDB().db.sqliteDatabase
+        let db = TransactionalDatabase(sqliteDB)
+        func createRelation(name: String, _ scheme: Scheme) -> MutableRelation {
+            let createResult = sqliteDB.createRelation(name, scheme: scheme)
+            precondition(createResult.ok != nil)
+            return db[name]
+        }
+
+        var collections = createRelation("collection", ["id", "type", "name", "parent", "order"])
+        var objects = createRelation("object", ["id", "type", "name", "coll_id", "order"])
+        var selectedCollectionID = createRelation("selected_collection", ["coll_id"])
+        var selectedInspectorItemIDs = createRelation("selected_inspector_item", ["item_id"])
+        
+        let selectedCollection = selectedCollectionID
+            .equijoin(collections, matching: ["coll_id": "id"])
+            .project(["id", "type", "name"])
+        
+        let inspectorCollectionItems = selectedCollection
+            .join(MakeRelation(["parent", "order"], [.NULL, 5.0]))
+        let inspectorObjectItems = selectedCollectionID
+            .join(objects)
+            .renameAttributes(["coll_id": "parent"])
+        let inspectorItems = inspectorCollectionItems
+            .union(inspectorObjectItems)
+        let selectedInspectorItems = selectedInspectorItemIDs
+            .equijoin(inspectorItems, matching: ["item_id": "id"])
+            .project(["id", "type", "name"])
+        
+        let selectedItems = selectedInspectorItems.otherwise(selectedCollection)
+        let selectedItemTypes = selectedItems.project(["type"])
+
+        var id: Int64 = 1
+        var order: Double = 1.0
+        
+        func addCollection(name: String) {
+            let row: Row = [
+                "id": RelationValue(id),
+                "type": "coll",
+                "name": RelationValue(name),
+                "parent": .NULL,
+                "order": RelationValue(order)
+            ]
+            collections.add(row)
+            id += 1
+            order += 1.0
+        }
+
+        func addObject(name: String) {
+            let row: Row = [
+                "id": RelationValue(id),
+                "type": "obj",
+                "name": RelationValue(name),
+                "coll_id": 1,
+                "order": RelationValue(order)
+            ]
+            objects.add(row)
+            id += 1
+            order += 1.0
+        }
+        
+        addCollection("Page1")
+        addCollection("Page2")
+        addObject("Obj1")
+        addObject("Obj2")
+        
+        var lastChange: RelationChange?
+        _ = selectedItemTypes.addChangeObserver({
+            lastChange = $0
+        })
+        
+        lastChange = nil
+        selectedCollectionID.add(["coll_id": 1])
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+        AssertEqual(lastChange?.removed, nil)
+        
+        lastChange = nil
+        selectedInspectorItemIDs.add(["item_id": 3])
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["obj"]))
+        AssertEqual(lastChange?.removed,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+
+        lastChange = nil
+        selectedInspectorItemIDs.delete(true)
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+        AssertEqual(lastChange?.removed,
+                    MakeRelation(
+                        ["type"],
+                        ["obj"]))
+
+        lastChange = nil
+        selectedCollectionID.delete(true)
+        AssertEqual(lastChange?.added, nil)
+        AssertEqual(lastChange?.removed,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+
+        lastChange = nil
+        selectedCollectionID.add(["coll_id": 1])
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+        AssertEqual(lastChange?.removed, nil)
+
+        lastChange = nil
+        selectedInspectorItemIDs.add(["item_id": 3])
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["obj"]))
+        AssertEqual(lastChange?.removed,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+
+        lastChange = nil
+        db.transaction{
+            selectedInspectorItemIDs.delete(true)
+            selectedCollectionID.delete(true)
+            selectedCollectionID.add(["coll_id": 2])
+        }
+        AssertEqual(lastChange?.added,
+                    MakeRelation(
+                        ["type"],
+                        ["coll"]))
+        AssertEqual(lastChange?.removed,
+                    MakeRelation(
+                        ["type"],
+                        ["obj"]))
+    }
+
     func testUniqueObservation() {
         let a = ChangeLoggingRelation(baseRelation:
             MakeRelation(
@@ -1210,5 +1354,44 @@ class RelationTests: DBTestCase {
         
         AssertEqual(change?.added,   MakeRelation(["n"], [ 2], [ 6], [ 8]))
         AssertEqual(change?.removed, MakeRelation(["n"], [ 1], [10], [11]))
+    }
+    
+    func DISABLED_testHugeRelationGraphPerformance() {
+        let base = MakeRelation(["A"])
+        
+        func unionAllPairs(relations: [Relation]) -> [Relation] {
+            var result: [Relation] = []
+            for (indexA, a) in relations.enumerate() {
+                for b in relations[indexA ..< relations.endIndex] {
+                    result.append(a.union(b))
+                }
+            }
+            return result
+        }
+        
+        func unionAdjacentPairs(relations: [Relation]) -> [Relation] {
+            var result: [Relation] = []
+            for i in 0.stride(to: relations.endIndex - 1, by: 2) {
+                result.append(relations[i].union(relations[i + 1]))
+            }
+            if relations.count % 2 != 0 {
+                result.append(relations.first!.union(relations.last!))
+            }
+            return result
+        }
+        
+        let level2 = unionAllPairs([base, base, base])
+        let level3 = unionAllPairs(level2)
+        let level4 = unionAllPairs(level3)
+        let level5 = unionAllPairs(level4)
+        var bringTogether = level5
+        while bringTogether.count > 1 {
+            bringTogether = unionAdjacentPairs(bringTogether)
+        }
+        let final = bringTogether[0]
+        
+        measureBlock({
+            AssertEqual(nil, final)
+        })
     }
 }
